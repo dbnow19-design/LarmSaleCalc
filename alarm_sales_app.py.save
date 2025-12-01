@@ -1,0 +1,199 @@
+import streamlit as st
+
+# ----- PRISER (ANPASSADE TILL DITT LARMUPPLÄGG) -----
+
+BASE_OVER_70 = 30990        # Paketpris 70+
+BASE_UNDER_70 = 32400       # Paketpris under 70
+EXTRA_MAGNET = 1000
+EXTRA_CAMERA = 2200
+EXTRA_FIRE = 2000
+
+START_FEE = 594             # engångsavgift
+ADMIN_MONTHLY = 49          # per månad
+INSTALLATION_COST = 5000    # bakas in i månadsbetalningen
+
+PAYMENT_OPTIONS = [
+    ("90 dagar (3 mån)", 3),
+    ("12 månader", 12),
+    ("24 månader", 24),
+    ("36 månader", 36),
+    ("60 månader", 60),
+    ("72 månader", 72),
+    ("120 månader", 120),
+]
+
+
+# ----- KÄRNLOGIK -----
+
+def compute_plans(financed_amount):
+    """Räknar ut alla planer (månad, total) för alla bindningstider."""
+    plans = []
+    for label, months in PAYMENT_OPTIONS:
+        monthly_fin = financed_amount / months
+        monthly_total = monthly_fin + ADMIN_MONTHLY
+        total_cost = monthly_total * months + START_FEE
+        plans.append({
+            "label": label,
+            "months": months,
+            "monthly": monthly_total,
+            "total": total_cost,
+        })
+    return plans
+
+
+def choose_best_plan_for_budget(plans, target_monthly):
+    """
+    Välj bästa plan för en given max-månadskostnad:
+    - Om det finns alternativ <= budget: ta det som är närmast budget (högst monthly).
+    - Annars: ta det som har lägst månadskostnad.
+    """
+    under_or_equal = [p for p in plans if p["monthly"] <= target_monthly]
+    if under_or_equal:
+        best = max(under_or_equal, key=lambda p: p["monthly"])
+        status = "within"
+    else:
+        best = min(plans, key=lambda p: p["monthly"])
+        status = "above"
+    return best, status
+
+
+def choose_discount_plan_to_match_price(plans, original_monthly, tolerance):
+    """
+    För rabatterat upplägg:
+    - Hitta de planer där månadskostnaden ligger inom [original - tol, original + tol].
+    - Bland dem: välj den med kortast bindningstid.
+    - Om inga i intervallet: välj den med månadskostnad närmast original.
+    """
+    lower = original_monthly - tolerance
+    upper = original_monthly + tolerance
+    candidates = [p for p in plans if lower <= p["monthly"] <= upper]
+
+    if candidates:
+        candidates.sort(key=lambda p: (p["months"], abs(p["monthly"] - original_monthly)))
+        return candidates[0], True
+
+    best = min(plans, key=lambda p: abs(p["monthly"] - original_monthly))
+    return best, False
+
+
+def seller_breakdown(base_price, is_over_70, add_magnet, add_camera, add_fire,
+                     charged_magnet, charged_camera, charged_fire,
+                     financed_amount, plan, tag):
+    """Returnerar en text med säljar-detaljer."""
+    extras_total_full = 0
+    extras_charged = 0
+
+    if add_magnet:
+        extras_total_full += EXTRA_MAGNET
+        if charged_magnet:
+            extras_charged += EXTRA_MAGNET
+    if add_camera:
+        extras_total_full += EXTRA_CAMERA
+        if charged_camera:
+            extras_charged += EXTRA_CAMERA
+    if add_fire:
+        extras_total_full += EXTRA_FIRE
+        if charged_fire:
+            extras_charged += EXTRA_FIRE
+
+    lines = []
+    lines.append(f"**[{tag}] Detaljer för säljare**")
+    lines.append(f"- Kundkategori: {'70+' if is_over_70 else 'Under 70'}")
+    lines.append(f"- Grundpris paket: {base_price:.0f} kr")
+    lines.append(f"- Tillval totalt (alla): {extras_total_full:.0f} kr")
+    lines.append(f"- Tillval debiterade: {extras_charged:.0f} kr")
+    if add_magnet:
+        lines.append(f"  - Extra magnet: {EXTRA_MAGNET} kr ({'debiteras' if charged_magnet else 'BJUDS'})")
+    if add_camera:
+        lines.append(f"  - Kamera: {EXTRA_CAMERA} kr ({'debiteras' if charged_camera else 'BJUDS'})")
+    if add_fire:
+        lines.append(f"  - Brandvarnare: {EXTRA_FIRE} kr ({'debiteras' if charged_fire else 'BJUDS'})")
+
+    lines.append(f"- Installation som finansieras: {INSTALLATION_COST:.0f} kr")
+    lines.append(f"- Totalt finansierat belopp (exkl. startavgift): {financed_amount:.0f} kr")
+    lines.append(f"- Adminavgift per månad: {ADMIN_MONTHLY:.0f} kr")
+    lines.append(f"- Startavgift: {START_FEE:.0f} kr")
+    lines.append(f"- Vald plan: {plan['label']} ({plan['months']} mån)")
+    lines.append(f"- Månadskostnad: {plan['monthly']:.2f} kr")
+    lines.append(f"- Totalkostnad inkl. startavgift: {plan['total']:.2f} kr")
+
+    return "\n".join(lines)
+
+
+# ----- STREAMLIT APP -----
+
+st.set_page_config(page_title="Larm Säljkalkylator", layout="wide")
+
+st.title("📊 Larm Säljkalkylator för säljare")
+
+st.sidebar.header("Grunddata – Kund & produkter")
+
+age_choice = st.sidebar.radio("Kundens ålder", ["70 år eller äldre", "Under 70"])
+is_over_70 = age_choice == "70 år eller äldre"
+base_price = BASE_OVER_70 if is_over_70 else BASE_UNDER_70
+
+st.sidebar.markdown("### Tillval som kunden vill ha")
+add_magnet = st.sidebar.checkbox(f"Extra magnet ({EXTRA_MAGNET} kr)")
+add_camera = st.sidebar.checkbox(f"Kamera ({EXTRA_CAMERA} kr)")
+add_fire = st.sidebar.checkbox(f"Brandvarnare ({EXTRA_FIRE} kr)")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Rabatt / bjussa på produkter")
+st.sidebar.caption("Välj vilka produkter kunden får, men som du inte tar betalt för.")
+
+charged_magnet = add_magnet and not st.sidebar.checkbox("Bjud på magnet", value=False)
+charged_camera = add_camera and not st.sidebar.checkbox("Bjud på kamera", value=False)
+charged_fire = add_fire and not st.sidebar.checkbox("Bjud på brandvarnare", value=False)
+
+st.sidebar.markdown("---")
+mode = st.sidebar.radio(
+    "Hur vill du räkna fram utgångspriset?",
+    ["Välj bindningstid själv", "Utgå från kundens maxpris per månad"]
+)
+
+tolerance = st.sidebar.slider(
+    "Tillåten skillnad i månadspris vid rabatt (± kr)",
+    min_value=0, max_value=500, value=50, step=10
+)
+
+# ---- RÄKNA STANDARDERBJUDANDE (UTAN BJUSS) ----
+
+extras_total_full = 0
+if add_magnet:
+    extras_total_full += EXTRA_MAGNET
+if add_camera:
+    extras_total_full += EXTRA_CAMERA
+if add_fire:
+    extras_total_full += EXTRA_FIRE
+
+financed_full = base_price + extras_total_full + INSTALLATION_COST
+plans_full = compute_plans(financed_full)
+
+st.subheader("1️⃣ Standarderbjudande (utan rabatt)")
+
+col_left, col_right = st.columns(2)
+
+with col_left:
+    if mode == "Välj bindningstid själv":
+        label_list = [p["label"] for p in plans_full]
+        selected_label = st.selectbox("Välj bindningstid", label_list)
+        selected_plan_full = next(p for p in plans_full if p["label"] == selected_label)
+        budget_status_text = ""
+    else:
+        max_monthly = st.number_input(
+            "Kundens maxpris per månad (kr/mån)",
+            min_value=0.0, value=800.0, step=50.0
+        )
+        selected_plan_full, status = choose_best_plan_for_budget(plans_full, max_monthly)
+        if status == "within":
+            budget_status_text = f"Planen ligger inom kundens budget ({max_monthly:.0f} kr/mån)."
+        else:
+            budget_status_text = (
+                f"Inga planer under kundens budget ({max_monthly:.0f} kr/mån). "
+                f"Visar lägsta möjliga månadskostnad."
+            )
+
+    st.markdown(f"**Vald plan:** {selected_plan_full['label']}")
+    st.write(f"💰 Månadskostnad: **{selected_plan_full['monthly']:.2f} kr/mån**")
+    st.write(f"⏱ Bindningstid: **{selected_plan_full['months']} månader**")
+    st.write(f"📦 Totalkostnad inkl. startavgift: **{selected_plan_full['total']:.2f} kr**"
